@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -213,7 +214,7 @@
             display: none;
             width: 20px;
             height: 20px;
-            border: 3px solid rgba(255,255,255,0.3);
+            border: 3px solid rgba(255, 255, 255, 0.3);
             border-radius: 50%;
             border-top-color: #fff;
             animation: spin 1s ease-in-out infinite;
@@ -224,7 +225,9 @@
         }
 
         @keyframes spin {
-            to { transform: rotate(360deg); }
+            to {
+                transform: rotate(360deg);
+            }
         }
 
         .section-title {
@@ -236,225 +239,275 @@
         }
     </style>
 </head>
+
 <body>
 
-<div class="container">
-    <header>
-        <h1>ESP32 IoT Dashboard</h1>
-        <div class="status-container">
-            <span id="connection-status" class="status">Waiting for config...</span>
-            <span id="last-update" class="last-update"></span>
-        </div>
-    </header>
+    <div class="container">
+        <header>
+            <h1>ESP32 IoT Dashboard</h1>
+            <div class="status-container">
+                <span id="connection-status" class="status">Waiting for config...</span>
+                <span id="last-update" class="last-update"></span>
+            </div>
+        </header>
 
-    <div class="config-card">
-        <input type="text" id="ipInput" placeholder="Enter ESP32 IP (e.g., 192.168.1.100)" autocomplete="off">
-        <button onclick="saveConfig()">Save & Connect</button>
+        <div class="config-card">
+            <input type="text" id="ipInput" placeholder="Enter ESP32 IP (e.g., 192.168.1.100)" autocomplete="off">
+            <button onclick="saveConfig()">Save & Connect</button>
+        </div>
+
+        <h2 class="section-title">Live Sensors</h2>
+        <div class="grid">
+            <div class="card">
+                <h3>Temperature</h3>
+                <div id="temp" class="sensor-value">-- °C</div>
+            </div>
+            <div class="card">
+                <h3>Humidity</h3>
+                <div id="hum" class="sensor-value">-- %</div>
+            </div>
+        </div>
+
+        <h2 class="section-title">Relay Control</h2>
+        <div class="grid">
+            <button id="relay-btn-1" class="relay-btn off" onclick="toggleRelay(1)" disabled>
+                <span class="spinner"></span>
+                <span class="text">Relay 1: OFF</span>
+            </button>
+            <button id="relay-btn-2" class="relay-btn off" onclick="toggleRelay(2)" disabled>
+                <span class="spinner"></span>
+                <span class="text">Relay 2: OFF</span>
+            </button>
+            <button id="relay-btn-3" class="relay-btn off" onclick="toggleRelay(3)" disabled>
+                <span class="spinner"></span>
+                <span class="text">Relay 3: OFF</span>
+            </button>
+            <button id="relay-btn-4" class="relay-btn off" onclick="toggleRelay(4)" disabled>
+                <span class="spinner"></span>
+                <span class="text">Relay 4: OFF</span>
+            </button>
+        </div>
+        <h2 class="section-title">Device Diagnostics</h2>
+        <div class="grid">
+            <div class="card">
+                <h3>IP / Signal</h3>
+                <div id="diag-ip" class="sensor-value" style="font-size:1.1rem">--</div>
+                <div id="diag-rssi" style="color:var(--secondary-text);margin-top:8px">--</div>
+            </div>
+            <div class="card">
+                <h3>Uptime</h3>
+                <div id="diag-uptime" class="sensor-value" style="font-size:1.5rem">--</div>
+            </div>
+            <div class="card">
+                <h3>Free Memory</h3>
+                <div id="diag-heap" class="sensor-value" style="font-size:1.5rem">--</div>
+            </div>
+            <div class="card">
+                <h3>Sensor Health</h3>
+                <div id="diag-sensor" class="sensor-value" style="font-size:1.5rem">--</div>
+            </div>
+        </div>
+
     </div>
 
-    <h2 class="section-title">Live Sensors</h2>
-    <div class="grid">
-        <div class="card">
-            <h3>Temperature</h3>
-            <div id="temp" class="sensor-value">-- °C</div>
-        </div>
-        <div class="card">
-            <h3>Humidity</h3>
-            <div id="hum" class="sensor-value">-- %</div>
-        </div>
-    </div>
+    <script>
+        let espIp = localStorage.getItem('espIp') || '';
+        let isConnected = false;
+        let fetchInterval = null;
+        let isRelayUpdating = [false, false, false, false];
 
-    <h2 class="section-title">Relay Control</h2>
-    <div class="grid">
-        <button id="relay-btn-1" class="relay-btn off" onclick="toggleRelay(1)" disabled>
-            <span class="spinner"></span>
-            <span class="text">Relay 1: OFF</span>
-        </button>
-        <button id="relay-btn-2" class="relay-btn off" onclick="toggleRelay(2)" disabled>
-            <span class="spinner"></span>
-            <span class="text">Relay 2: OFF</span>
-        </button>
-        <button id="relay-btn-3" class="relay-btn off" onclick="toggleRelay(3)" disabled>
-            <span class="spinner"></span>
-            <span class="text">Relay 3: OFF</span>
-        </button>
-        <button id="relay-btn-4" class="relay-btn off" onclick="toggleRelay(4)" disabled>
-            <span class="spinner"></span>
-            <span class="text">Relay 4: OFF</span>
-        </button>
-    </div>
-</div>
+        // INIT
+        window.onload = () => {
+            const ipInput = document.getElementById('ipInput');
+            ipInput.value = espIp.replace(/^https?:\/\//, '');
+            if (espIp) startPolling();
+        };
 
-<script>
-let espIp = localStorage.getItem('espIp') || '';
-let isConnected = false;
-let fetchInterval = null;
-let isRelayUpdating = [false, false, false, false];
+        // SAVE CONFIG
+        function saveConfig() {
+            let ip = document.getElementById('ipInput').value.trim();
+            if (!ip) return;
 
-// INIT
-window.onload = () => {
-    const ipInput = document.getElementById('ipInput');
-    ipInput.value = espIp.replace(/^https?:\/\//, '');
-    if (espIp) startPolling();
-};
+            ip = ip.replace(/^https?:\/\//, '');
+            espIp = `http://${ip}`;
+            localStorage.setItem('espIp', espIp);
 
-// SAVE CONFIG
-function saveConfig() {
-    let ip = document.getElementById('ipInput').value.trim();
-    if (!ip) return;
-
-    ip = ip.replace(/^https?:\/\//, '');
-    espIp = `http://${ip}`;
-    localStorage.setItem('espIp', espIp);
-
-    updateConnectionState(false, "Connecting...");
-    startPolling();
-}
-
-// POLLING
-function startPolling() {
-    if (fetchInterval) clearInterval(fetchInterval);
-    fetchData();
-    fetchInterval = setInterval(fetchData, 3000); // slightly safer
-}
-
-// FETCH WRAPPER
-async function fetchJson(endpoint) {
-    if (!espIp) throw new Error("No IP");
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500);
-
-    try {
-        const res = await fetch(`${espIp}${endpoint}`, {
-            signal: controller.signal
-        });
-
-        clearTimeout(timeout);
-
-        if (!res.ok) throw new Error("HTTP " + res.status);
-
-        return await res.json();
-    } catch (e) {
-        clearTimeout(timeout);
-        throw e;
-    }
-}
-
-// MAIN FETCH
-async function fetchData() {
-    if (!espIp) return;
-
-    try {
-        const [data, status] = await Promise.all([
-            fetchJson('/data'),
-            fetchJson('/status')
-        ]);
-
-        updateSensors(data);
-        updateRelaysUI(status);
-        updateConnectionState(true);
-
-    } catch (err) {
-        console.log("Fetch failed:", err.message);
-        updateConnectionState(false);
-    }
-}
-
-// SENSOR UPDATE (SAFE)
-function updateSensors(data) {
-    const t = document.getElementById('temp');
-    const h = document.getElementById('hum');
-
-    if (typeof data.temperature === "number" && !isNaN(data.temperature)) {
-        t.textContent = `${data.temperature.toFixed(1)} °C`;
-    } else {
-        t.textContent = "-- °C";
-    }
-
-    if (typeof data.humidity === "number" && !isNaN(data.humidity)) {
-        h.textContent = `${data.humidity.toFixed(1)} %`;
-    } else {
-        h.textContent = "-- %";
-    }
-}
-
-// RELAY UI UPDATE
-function updateRelaysUI(status) {
-    if (!status.relay || !Array.isArray(status.relay)) return;
-
-    status.relay.forEach((state, i) => {
-        if (!isRelayUpdating[i]) {
-            setRelayButtonState(i + 1, state === 1);
+            updateConnectionState(false, "Connecting...");
+            startPolling();
         }
-    });
-}
 
-// SET BUTTON STATE
-function setRelayButtonState(ch, isOn) {
-    const btn = document.getElementById(`relay-btn-${ch}`);
-    const text = btn.querySelector('.text');
+        // POLLING
+        function startPolling() {
+            fetchDiagnostics();
+            setInterval(fetchDiagnostics, 10000);
 
-    btn.classList.toggle('on', isOn);
-    btn.classList.toggle('off', !isOn);
-    text.textContent = `Relay ${ch}: ${isOn ? 'ON' : 'OFF'}`;
-}
+            if (fetchInterval) clearInterval(fetchInterval);
+            fetchData();
+            fetchInterval = setInterval(fetchData, 3000); // slightly safer
+        }
 
-// TOGGLE RELAY
-async function toggleRelay(ch) {
-    if (!espIp || !isConnected || isRelayUpdating[ch - 1]) return;
+        // FETCH WRAPPER
+        async function fetchJson(endpoint) {
+            if (!espIp) throw new Error("No IP");
 
-    const btn = document.getElementById(`relay-btn-${ch}`);
-    const isOn = btn.classList.contains('on');
-    const newState = isOn ? 'off' : 'on';
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 2500);
 
-    isRelayUpdating[ch - 1] = true;
-    btn.classList.add('loading');
-    btn.disabled = true;
+            try {
+                const res = await fetch(`${espIp}${endpoint}`, {
+                    signal: controller.signal
+                });
 
-    try {
-        await fetchJson(`/relay?ch=${ch}&state=${newState}`);
+                clearTimeout(timeout);
 
-        // optimistic update
-        setRelayButtonState(ch, !isOn);
+                if (!res.ok) throw new Error("HTTP " + res.status);
 
-        // sync after short delay
-        setTimeout(fetchData, 400);
+                return await res.json();
+            } catch (e) {
+                clearTimeout(timeout);
+                throw e;
+            }
+        }
 
-    } catch (e) {
-        console.log("Relay error:", e.message);
-    }
+        // MAIN FETCH
+        async function fetchData() {
+            if (!espIp) return;
 
-    btn.classList.remove('loading');
-    btn.disabled = false;
-    isRelayUpdating[ch - 1] = false;
-}
+            try {
+                const [data, status] = await Promise.all([
+                    fetchJson('/data'),
+                    fetchJson('/status')
+                ]);
 
-// CONNECTION STATE
-function updateConnectionState(connected, msg = null) {
-    isConnected = connected;
+                updateSensors(data);
+                updateRelaysUI(status);
+                updateConnectionState(true);
 
-    const status = document.getElementById('connection-status');
-    const time = document.getElementById('last-update');
-    const btns = document.querySelectorAll('.relay-btn');
+            } catch (err) {
+                console.log("Fetch failed:", err.message);
+                updateConnectionState(false);
+            }
+        }
 
-    if (connected) {
-        status.textContent = "Connected";
-        status.className = "status connected";
+        // SENSOR UPDATE (SAFE)
+        function updateSensors(data) {
+            const t = document.getElementById('temp');
+            const h = document.getElementById('hum');
 
-        time.textContent = "Last update: " + new Date().toLocaleTimeString();
+            if (typeof data.temperature === "number" && !isNaN(data.temperature)) {
+                t.textContent = `${data.temperature.toFixed(1)} °C`;
+            } else {
+                t.textContent = "-- °C";
+            }
 
-        btns.forEach(b => {
-            if (!b.classList.contains('loading')) b.disabled = false;
-        });
+            if (typeof data.humidity === "number" && !isNaN(data.humidity)) {
+                h.textContent = `${data.humidity.toFixed(1)} %`;
+            } else {
+                h.textContent = "-- %";
+            }
+        }
 
-    } else {
-        status.textContent = msg || "Disconnected";
-        status.className = "status disconnected";
+        // RELAY UI UPDATE
+        function updateRelaysUI(status) {
+            if (!status.relay || !Array.isArray(status.relay)) return;
 
-        btns.forEach(b => b.disabled = true);
-    }
-}
-</script>
+            status.relay.forEach((state, i) => {
+                if (!isRelayUpdating[i]) {
+                    setRelayButtonState(i + 1, state === 1);
+                }
+            });
+        }
+
+        // SET BUTTON STATE
+        function setRelayButtonState(ch, isOn) {
+            const btn = document.getElementById(`relay-btn-${ch}`);
+            const text = btn.querySelector('.text');
+
+            btn.classList.toggle('on', isOn);
+            btn.classList.toggle('off', !isOn);
+            text.textContent = `Relay ${ch}: ${isOn ? 'ON' : 'OFF'}`;
+        }
+
+        // TOGGLE RELAY
+        async function toggleRelay(ch) {
+            if (!espIp || !isConnected || isRelayUpdating[ch - 1]) return;
+
+            const btn = document.getElementById(`relay-btn-${ch}`);
+            const isOn = btn.classList.contains('on');
+            const newState = isOn ? 'off' : 'on';
+
+            isRelayUpdating[ch - 1] = true;
+            btn.classList.add('loading');
+            btn.disabled = true;
+
+            try {
+                await fetchJson(`/relay?ch=${ch}&state=${newState}`);
+
+                // optimistic update
+                setRelayButtonState(ch, !isOn);
+
+                // sync after short delay
+                setTimeout(fetchData, 400);
+
+            } catch (e) {
+                console.log("Relay error:", e.message);
+            }
+
+            btn.classList.remove('loading');
+            btn.disabled = false;
+            isRelayUpdating[ch - 1] = false;
+        }
+
+        // CONNECTION STATE
+        function updateConnectionState(connected, msg = null) {
+            isConnected = connected;
+
+            const status = document.getElementById('connection-status');
+            const time = document.getElementById('last-update');
+            const btns = document.querySelectorAll('.relay-btn');
+
+            if (connected) {
+                status.textContent = "Connected";
+                status.className = "status connected";
+
+                time.textContent = "Last update: " + new Date().toLocaleTimeString();
+
+                btns.forEach(b => {
+                    if (!b.classList.contains('loading')) b.disabled = false;
+                });
+
+            } else {
+                status.textContent = msg || "Disconnected";
+                status.className = "status disconnected";
+
+                btns.forEach(b => b.disabled = true);
+            }
+        }
+        function formatUptime(ms) {
+            let s = Math.floor(ms / 1000), m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+            if (d) return `${d}d ${h % 24}h ${m % 60}m`;
+            if (h) return `${h}h ${m % 60}m`;
+            if (m) return `${m}m ${s % 60}s`;
+            return `${s}s`;
+        }
+        async function fetchDiagnostics() {
+            try {
+                const d = await fetchJson('/diagnostics');
+                document.getElementById('diag-ip').textContent = d.ip || '--';
+                const q = d.wifi_rssi >= -50 ? 'Excellent' : d.wifi_rssi >= -65 ? 'Good' : d.wifi_rssi >= -80 ? 'Fair' : 'Weak';
+                document.getElementById('diag-rssi').textContent = `${d.wifi_rssi} dBm (${q})`;
+                document.getElementById('diag-uptime').textContent = formatUptime(d.uptime_ms);
+                const kb = Math.round(d.free_heap / 1024);
+                const heapEl = document.getElementById('diag-heap');
+                heapEl.textContent = `${kb} KB`;
+                heapEl.style.color = kb < 50 ? 'var(--danger-color)' : 'var(--primary-text)';
+                const sEl = document.getElementById('diag-sensor');
+                sEl.textContent = d.sensor_ok ? 'OK' : 'FAIL';
+                sEl.style.color = d.sensor_ok ? 'var(--success-color)' : 'var(--danger-color)';
+            } catch (e) { }
+        }
+
+    </script>
 </body>
+
 </html>

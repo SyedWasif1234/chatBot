@@ -76,6 +76,10 @@ logging.basicConfig(
 # =========================================================
 
 ctrl = ESP32API(ESP32_URL)
+ALERT_THRESHOLDS = {"temp_max": 40.0, "temp_min": 0.0, "hum_max": 90.0, "hum_min": 10.0}
+subscribed_chats = set()
+_alert_state = {"offline": False, "temp_high": False, "temp_low": False, "hum_high": False}
+
 
 # =========================================================
 # Helpers
@@ -101,6 +105,18 @@ def parse_channel(args: tuple) -> int | None:
     except ValueError:
         pass
     return None
+
+def format_uptime(ms: int) -> str:
+    s = ms // 1000; m = s // 60; h = m // 60; d = h // 24
+    if d:  return f"{d}d {h%24}h {m%60}m"
+    if h:  return f"{h}h {m%60}m {s%60}s"
+    if m:  return f"{m}m {s%60}s"
+    return f"{s}s"
+
+def format_rssi(rssi: int) -> str:
+    q = "Excellent" if rssi>=-50 else "Good" if rssi>=-65 else "Fair" if rssi>=-80 else "Weak"
+    return f"{rssi} dBm ({q})"
+
 
 
 def natural_language_parse(text: str) -> dict:
@@ -194,6 +210,10 @@ def natural_language_parse(text: str) -> dict:
     if any(w in t for w in ["help", "command", "what can you do", "how to"]):
         return {"intent": "help"}
 
+    if any(w in t for w in ["diagnose", "diagnosis", "health", "health check",
+                             "system check", "device status", "check device"]):
+        return {"intent": "diagnose"}
+
     return {"intent": "unknown"}
 
 
@@ -213,6 +233,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     connected   = ctrl.test_connection()
     status_text = "✅ *Connected* to ESP32" if connected else "❌ *Cannot reach ESP32* — check WiFi"
     name = update.effective_user.first_name or "there"
+    subscribed_chats.add(update.effective_chat.id)
     await update.message.reply_markdown(
         f"👋 Hey *{name}*! I'm your ESP32 controller bot.\n\n"
         f"{status_text}\n"
@@ -305,6 +326,29 @@ async def cmd_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_markdown(
         f"✅ ESP32 updated — *{'reachable' if connected else 'not responding'}*"
     )
+async def cmd_diagnose(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Running diagnostics...")
+    d = ctrl.get_diagnostics()
+    if not d:
+        await update.message.reply_markdown("❌ *ESP32 unreachable* — cannot run diagnostics.")
+        return
+    relays = d.get("relay", [0,0,0,0])
+    relay_lines = "\n".join(
+        f"{'🟢' if s else '🔴'} {RELAY_LABELS.get(i+1, f'Relay {i+1}')}: {'ON' if s else 'OFF'}"
+        for i, s in enumerate(relays)
+    )
+    heap_kb = d.get("free_heap", 0) // 1024
+    await update.message.reply_markdown(
+        f"*Device Diagnosis Report*\n"
+        f"{'─'*28}\n"
+        f"IP: `{d.get('ip','?')}`\n"
+        f"Uptime: `{format_uptime(d.get('uptime_ms',0))}`\n"
+        f"WiFi: `{format_rssi(d.get('wifi_rssi',0))}`\n"
+        f"Memory: `{heap_kb} KB {'⚠️' if heap_kb<50 else '✅'}`\n"
+        f"Sensor: `{'OK ✅' if d.get('sensor_ok') else 'FAIL ❌'}`  "
+        f"`{d.get('temperature',0):.1f}°C / {d.get('humidity',0):.1f}%`\n"
+        f"{'─'*28}\n{relay_lines}"
+    )
 
 # =========================================================
 # Natural Language Chat Handler
@@ -342,6 +386,10 @@ async def cmd_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif intent == "help":
         await cmd_help(update, context)
+    
+    elif intent == "diagnose":
+        await cmd_diagnose(update, context)
+
 
     else:
         await update.message.reply_markdown(
@@ -351,6 +399,39 @@ async def cmd_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             '_"Show relay status"_\n\n'
             "Or type /help for all commands."
         )
+async def anomaly_monitor(bot):
+    while True:
+        await asyncio.sleep(30)
+        if not subscribed_chats:
+            continue
+        data = ctrl.get_data()
+        alerts = []
+        if data is None:
+            if not _alert_state["offline"]:
+                _alert_state["offline"] = True
+                alerts.append("❌ ESP32 is *unreachable*!")
+        else:
+            _alert_state["offline"] = False
+            t, h = data.get("temperature", 0), data.get("humidity", 0)
+            if t > ALERT_THRESHOLDS["temp_max"] and not _alert_state["temp_high"]:
+                _alert_state["temp_high"] = True
+                alerts.append(f"🌡️ High temp alert: `{t:.1f}°C`")
+            elif t <= ALERT_THRESHOLDS["temp_max"]:
+                _alert_state["temp_high"] = False
+            if t < ALERT_THRESHOLDS["temp_min"] and not _alert_state["temp_low"]:
+                _alert_state["temp_low"] = True
+                alerts.append(f"🌡️ Low temp alert: `{t:.1f}°C`")
+            elif t >= ALERT_THRESHOLDS["temp_min"]:
+                _alert_state["temp_low"] = False
+            if h > ALERT_THRESHOLDS["hum_max"] and not _alert_state["hum_high"]:
+                _alert_state["hum_high"] = True
+                alerts.append(f"💧 High humidity: `{h:.1f}%`")
+            elif h <= ALERT_THRESHOLDS["hum_max"]:
+                _alert_state["hum_high"] = False
+        if alerts:
+            for chat_id in subscribed_chats:
+                await bot.send_message(chat_id=chat_id,
+                    text="⚠️ *Device Alert*\n\n" + "\n".join(alerts), parse_mode="Markdown")
 
 # =========================================================
 # Main
@@ -372,6 +453,7 @@ async def main():
     app.add_handler(CommandHandler("humidity", cmd_humidity))
     app.add_handler(CommandHandler("sensors",  cmd_sensors))
     app.add_handler(CommandHandler("ip",       cmd_ip))
+    app.add_handler(CommandHandler("diagnose", cmd_diagnose))
 
     # Natural language — catch all plain text messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, cmd_chat))
@@ -383,6 +465,7 @@ async def main():
         await app.initialize()
         await app.start()
         await app.updater.start_polling()
+        asyncio.create_task(anomaly_monitor(app.bot))
         await asyncio.Event().wait()
         await app.updater.stop()
         await app.stop()

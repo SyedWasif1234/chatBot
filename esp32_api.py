@@ -45,6 +45,21 @@ class ESP32API:
             print(f"[Error] get_status: {e}")
             return None
 
+    def get_diagnostics(self) -> dict | None:
+        """
+        Fetch full device diagnostics from /diagnostics.
+        Returns dict with uptime_ms, wifi_rssi, free_heap,
+        sensor_ok, temperature, humidity, ip, relay[]
+        """
+        try:
+            r = requests.get(f"{self.base_url}/diagnostics", timeout=4)
+            return r.json()
+        except Exception as e:
+            print(f"[Error] get_diagnostics: {e}")
+            return None
+
+
+
     def toggle_relay(self, channel: int, state: str) -> bool:
         """
         Set relay channel (1-4) to 'on' or 'off'.
