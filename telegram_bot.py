@@ -206,6 +206,10 @@ def natural_language_parse(text: str) -> dict:
                              "which relay", "relay status"]):
         return {"intent": "status"}
 
+    # --- Owner ---
+    if any(w in t for w in ["owner", "who made you", "who created you", "who built you", "belong to"]):
+        return {"intent": "owner"}
+
     # --- Help ---
     if any(w in t for w in ["help", "command", "what can you do", "how to"]):
         return {"intent": "help"}
@@ -383,6 +387,11 @@ async def cmd_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif intent == "status":
         await cmd_status(update, context)
+
+    elif intent == "owner":
+        await update.message.reply_markdown(
+            "👤 My owners are *mohsinwa* and *faizwa* 🤝"
+        )
 
     elif intent == "help":
         await cmd_help(update, context)
