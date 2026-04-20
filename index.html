@@ -237,6 +237,136 @@
             border-bottom: 1px solid #333;
             padding-bottom: 10px;
         }
+
+        /* ── Chat Assistant ── */
+        .chat-section {
+            margin-top: 10px;
+        }
+
+        .chat-window {
+            background: var(--surface-color);
+            border-radius: var(--border-radius);
+            padding: 20px;
+            height: 320px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-bottom: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .msg {
+            max-width: 75%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            font-size: 0.95rem;
+            line-height: 1.5;
+            animation: fadeUp 0.2s ease;
+        }
+
+        .msg.user {
+            background: var(--accent-color);
+            color: #000;
+            align-self: flex-end;
+            border-bottom-right-radius: 4px;
+        }
+
+        .msg.bot {
+            background: #2a2a2a;
+            color: var(--primary-text);
+            align-self: flex-start;
+            border-bottom-left-radius: 4px;
+        }
+
+        .msg.bot.thinking {
+            opacity: 0.5;
+            font-style: italic;
+        }
+
+        @keyframes fadeUp {
+            from {
+                opacity: 0;
+                transform: translateY(8px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .chat-input-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .chat-input-row input {
+            flex: 1;
+            padding: 14px 18px;
+            border: 1px solid #333;
+            border-radius: 30px;
+            background: #2c2c2c;
+            color: var(--primary-text);
+            font-size: 1rem;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        .chat-input-row input:focus {
+            border-color: var(--accent-color);
+        }
+
+        .chat-btn {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+            font-size: 1.2rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.15s, opacity 0.2s;
+        }
+
+        .chat-btn:hover {
+            opacity: 0.85;
+            transform: scale(1.08);
+        }
+
+        .chat-btn:active {
+            transform: scale(0.95);
+        }
+
+        #send-btn {
+            background: var(--accent-color);
+            color: #000;
+        }
+
+        #mic-btn {
+            background: #333;
+            color: var(--primary-text);
+        }
+
+        #mic-btn.listening {
+            background: var(--danger-color);
+            color: #fff;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.4);
+            }
+
+            50% {
+                box-shadow: 0 0 0 8px rgba(244, 67, 54, 0);
+            }
+        }
     </style>
 </head>
 
@@ -306,6 +436,18 @@
                 <h3>Sensor Health</h3>
                 <div id="diag-sensor" class="sensor-value" style="font-size:1.5rem">--</div>
             </div>
+        </div>
+        <h2 class="section-title chat-section">Chat Assistant</h2>
+        <div id="chat-window" class="chat-window">
+            <div class="msg bot">👋 Hi! I'm your ESP32 assistant. Enter an IP above to connect, then ask me
+                anything.<br>
+                Try: <em>"Turn on relay 1"</em> or <em>"What's the temperature?"</em></div>
+        </div>
+        <div class="chat-input-row">
+            <input id="chat-input" type="text" placeholder='Try "turn on relay 1" or "read sensors"...'
+                onkeydown="if(event.key==='Enter') sendChat()">
+            <button id="send-btn" class="chat-btn" onclick="sendChat()" title="Send">➤</button>
+            <button id="mic-btn" class="chat-btn" onclick="toggleMic()" title="Voice input">🎤</button>
         </div>
 
     </div>
@@ -505,6 +647,175 @@
                 sEl.textContent = d.sensor_ok ? 'OK' : 'FAIL';
                 sEl.style.color = d.sensor_ok ? 'var(--success-color)' : 'var(--danger-color)';
             } catch (e) { }
+        }
+        // ── Chat NLP + TTS + STT ────────────────────────────────
+
+        const RELAY_LABELS = { 1: "Relay 1", 2: "Relay 2", 3: "Relay 3", 4: "Relay 4" };
+
+        function nlpParse(raw) {
+            const t = raw.toLowerCase().trim();
+            const wantsOn = /turn on|switch on|enable|activate|power on/.test(t) || t.endsWith(' on');
+            const wantsOff = /turn off|switch off|disable|deactivate|power off/.test(t) || t.endsWith(' off');
+
+            if (/everything|all relay|all off|all on/.test(t)) {
+                if (wantsOn) return { intent: 'relay_all', state: 'on' };
+                if (wantsOff) return { intent: 'relay_all', state: 'off' };
+            }
+
+            const wordMap = { one: 1, first: 1, two: 2, second: 2, three: 3, third: 3, four: 4, fourth: 4, '1': 1, '2': 2, '3': 3, '4': 4 };
+            let ch = null;
+            const rn = t.match(/relay\s*([1-4]|one|two|three|four)/);
+            if (rn) ch = wordMap[rn[1]];
+            if (!ch) for (const [w, n] of Object.entries(wordMap)) {
+                if (new RegExp(`\\b${w}\\b`).test(t)) { ch = n; break; }
+            }
+            if (ch) {
+                if (wantsOn) return { intent: 'relay', channel: ch, state: 'on' };
+                if (wantsOff) return { intent: 'relay', channel: ch, state: 'off' };
+                return { intent: 'status' };
+            }
+
+            if (/sensor|reading|read/.test(t)) return { intent: 'sensors' };
+            if (/temperature|temp|hot|cold/.test(t)) return { intent: 'temperature' };
+            if (/humid|moisture/.test(t)) return { intent: 'humidity' };
+            if (/status|state|which relay/.test(t)) return { intent: 'status' };
+            if (/diagnos|health|check device/.test(t)) return { intent: 'diagnose' };
+            if (/help|command|what can/.test(t)) return { intent: 'help' };
+            return { intent: 'unknown' };
+        }
+
+        function addMsg(text, who) {
+            const win = document.getElementById('chat-window');
+            const d = document.createElement('div');
+            d.className = `msg ${who}`;
+            d.innerHTML = text;
+            win.appendChild(d);
+            win.scrollTop = win.scrollHeight;
+            return d;
+        }
+
+        function botSay(text) {
+            addMsg(text, 'bot');
+            const u = new SpeechSynthesisUtterance(text.replace(/<[^>]+>/g, ''));
+            u.rate = 1.0; u.pitch = 1.0;
+            window.speechSynthesis.speak(u);
+        }
+
+        async function handleIntent(r) {
+            if (!espIp) { botSay("Please enter the ESP32 IP address and connect first."); return; }
+
+            if (r.intent === 'relay') {
+                const label = RELAY_LABELS[r.channel] || `Relay ${r.channel}`;
+                botSay(`Turning ${label} ${r.state}...`);
+                try {
+                    await fetchJson(`/relay?ch=${r.channel}&state=${r.state}`);
+                    botSay(`✅ ${label} is now ${r.state.toUpperCase()}.`);
+                    fetchData();
+                } catch { botSay(`❌ Couldn't reach ESP32. Check WiFi.`); }
+            }
+            else if (r.intent === 'relay_all') {
+                botSay(`Turning all relays ${r.state}...`);
+                try {
+                    await Promise.all([1, 2, 3, 4].map(ch => fetchJson(`/relay?ch=${ch}&state=${r.state}`)));
+                    botSay(`✅ All relays are now ${r.state.toUpperCase()}.`);
+                    fetchData();
+                } catch { botSay("❌ Some relays failed. Check ESP32."); }
+            }
+            else if (r.intent === 'temperature') {
+                try { const d = await fetchJson('/data'); botSay(`🌡️ The temperature is <b>${d.temperature.toFixed(1)}°C</b>.`); }
+                catch { botSay("❌ Couldn't read temperature."); }
+            }
+            else if (r.intent === 'humidity') {
+                try { const d = await fetchJson('/data'); botSay(`💧 The humidity is <b>${d.humidity.toFixed(1)}%</b>.`); }
+                catch { botSay("❌ Couldn't read humidity."); }
+            }
+            else if (r.intent === 'sensors') {
+                try {
+                    const d = await fetchJson('/data');
+                    botSay(`🌡️ Temperature: <b>${d.temperature.toFixed(1)}°C</b> &nbsp;|&nbsp; 💧 Humidity: <b>${d.humidity.toFixed(1)}%</b>`);
+                } catch { botSay("❌ Sensor read failed."); }
+            }
+            else if (r.intent === 'status') {
+                try {
+                    const s = await fetchJson('/status');
+                    const lines = s.relay.map((v, i) => `${v ? '🟢' : '🔴'} Relay ${i + 1}: ${v ? 'ON' : 'OFF'}`).join(' &nbsp; ');
+                    botSay(lines);
+                } catch { botSay("❌ Couldn't get relay status."); }
+            }
+            else if (r.intent === 'diagnose') {
+                botSay("Running diagnostics...");
+                try {
+                    const d = await fetchJson('/diagnostics');
+                    const q = d.wifi_rssi >= -50 ? 'Excellent' : d.wifi_rssi >= -65 ? 'Good' : d.wifi_rssi >= -80 ? 'Fair' : 'Weak';
+                    const kb = Math.round(d.free_heap / 1024);
+                    botSay(
+                        `📡 IP: <b>${d.ip}</b><br>` +
+                        `⏱ Uptime: <b>${formatUptime(d.uptime_ms)}</b><br>` +
+                        `📶 WiFi: <b>${d.wifi_rssi} dBm (${q})</b><br>` +
+                        `🧠 Memory: <b>${kb} KB</b><br>` +
+                        `🌡️ Sensor: <b>${d.sensor_ok ? 'OK ✅' : 'FAIL ❌'}</b> — ${d.temperature.toFixed(1)}°C / ${d.humidity.toFixed(1)}%`
+                    );
+                } catch { botSay("❌ ESP32 unreachable."); }
+            }
+            else if (r.intent === 'help') {
+                botSay(
+                    "Here's what I can do:<br>" +
+                    '🔌 <em>"Turn on relay 1"</em> / <em>"Turn off everything"</em><br>' +
+                    '🌡️ <em>"What\'s the temperature?"</em> / <em>"Read sensors"</em><br>' +
+                    '📊 <em>"Show relay status"</em> / <em>"Diagnose"</em>'
+                );
+            }
+            else {
+                botSay("🤔 I didn't get that. Try <em>\"turn on relay 1\"</em> or type <em>help</em>.");
+            }
+        }
+
+        async function sendChat() {
+            const inp = document.getElementById('chat-input');
+            const text = inp.value.trim();
+            if (!text) return;
+            inp.value = '';
+            addMsg(text, 'user');
+            await handleIntent(nlpParse(text));
+        }
+
+        // ── Voice Input (STT) ────────────────────────────────────
+        let recognition = null;
+        let isListening = false;
+
+        function toggleMic() {
+            const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRec) { botSay("⚠️ Your browser doesn't support voice input. Try Chrome."); return; }
+
+            const btn = document.getElementById('mic-btn');
+            if (isListening) {
+                recognition.stop(); return;
+            }
+            recognition = new SpeechRec();
+            recognition.lang = 'en-US';
+            recognition.interimResults = false;
+
+            recognition.onstart = () => {
+                isListening = true;
+                btn.classList.add('listening');
+                btn.textContent = '⏹';
+            };
+            recognition.onresult = (e) => {
+                const text = e.results[0][0].transcript;
+                document.getElementById('chat-input').value = text;
+                sendChat();
+            };
+            recognition.onend = () => {
+                isListening = false;
+                btn.classList.remove('listening');
+                btn.textContent = '🎤';
+            };
+            recognition.onerror = () => {
+                isListening = false;
+                btn.classList.remove('listening');
+                btn.textContent = '🎤';
+            };
+            recognition.start();
         }
 
     </script>
