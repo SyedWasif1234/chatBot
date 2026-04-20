@@ -79,6 +79,7 @@ ctrl = ESP32API(ESP32_URL)
 ALERT_THRESHOLDS = {"temp_max": 40.0, "temp_min": 0.0, "hum_max": 90.0, "hum_min": 10.0}
 subscribed_chats = set()
 _alert_state = {"offline": False, "temp_high": False, "temp_low": False, "hum_high": False}
+_dance_task: asyncio.Task | None = None   # tracks running dance loop
 
 
 # =========================================================
@@ -210,6 +211,20 @@ def natural_language_parse(text: str) -> dict:
     if any(w in t for w in ["owner", "who made you", "who created you", "who built you", "belong to"]):
         return {"intent": "owner"}
 
+    # --- Dance ---
+    if any(w in t for w in ["dance", "party mode", "light show", "disco", "blink"]):
+        return {"intent": "dance"}
+
+    # --- Stop dance ---
+    if any(w in t for w in ["stop dance", "stop party", "stop blinking", "stop light"]):
+        return {"intent": "stopdance"}
+
+    # --- All on / off (shortcut phrases) ---
+    if any(w in t for w in ["all on", "turn on all", "switch on all", "everything on"]):
+        return {"intent": "relay_all", "state": "on"}
+    if any(w in t for w in ["all off", "turn off all", "switch off all", "everything off"]):
+        return {"intent": "relay_all", "state": "off"}
+
     # --- Help ---
     if any(w in t for w in ["help", "command", "what can you do", "how to"]):
         return {"intent": "help"}
@@ -320,6 +335,75 @@ async def cmd_sensors(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Could not read sensors. Check WiFi.")
 
 
+async def cmd_allon(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    results = [ctrl.toggle_relay(ch, "on") for ch in range(1, 5)]
+    if all(results):
+        await update.message.reply_markdown("🟢 *All 4 relays turned ON*")
+    else:
+        await update.message.reply_text("⚠️ Some relays failed to respond.")
+
+
+async def cmd_alloff(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    results = [ctrl.toggle_relay(ch, "off") for ch in range(1, 5)]
+    if all(results):
+        await update.message.reply_markdown("🔴 *All 4 relays turned OFF*")
+    else:
+        await update.message.reply_text("⚠️ Some relays failed to respond.")
+
+
+# ── Dance mode ────────────────────────────────────────────
+
+DANCE_PATTERNS = [
+    # Sequential wave  →
+    [(1,"on"),(1,"off"),(2,"on"),(2,"off"),(3,"on"),(3,"off"),(4,"on"),(4,"off")],
+    # Pair alternation
+    [(1,"on"),(3,"on"),(2,"off"),(4,"off"),(1,"off"),(3,"off"),(2,"on"),(4,"on")],
+    # All flash
+    [(1,"on"),(2,"on"),(3,"on"),(4,"on"),(1,"off"),(2,"off"),(3,"off"),(4,"off")],
+    # Reverse wave  ←
+    [(4,"on"),(4,"off"),(3,"on"),(3,"off"),(2,"on"),(2,"off"),(1,"on"),(1,"off")],
+    # Ping-pong
+    [(1,"on"),(2,"on"),(1,"off"),(3,"on"),(2,"off"),(4,"on"),(3,"off"),(4,"off")],
+]
+
+async def _dance_loop():
+    """Cycle through relay blink patterns until cancelled."""
+    step = 0
+    while True:
+        pattern = DANCE_PATTERNS[step % len(DANCE_PATTERNS)]
+        for ch, state in pattern:
+            ctrl.toggle_relay(ch, state)
+            try:
+                await asyncio.sleep(0.25)
+            except asyncio.CancelledError:
+                # Turn everything off on exit
+                for c in range(1, 5):
+                    ctrl.toggle_relay(c, "off")
+                return
+        step += 1
+
+
+async def cmd_dance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global _dance_task
+    if _dance_task and not _dance_task.done():
+        await update.message.reply_text("🕺 Dance mode is already running! Send /stopdance to stop.")
+        return
+    _dance_task = asyncio.create_task(_dance_loop())
+    await update.message.reply_markdown(
+        "🕺 *Dance mode activated!* Relays are grooving\n"
+        "Send /stopdance to stop."
+    )
+
+
+async def cmd_stopdance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global _dance_task
+    if _dance_task and not _dance_task.done():
+        _dance_task.cancel()
+        await update.message.reply_markdown("⏹ *Dance mode stopped.* All relays off.")
+    else:
+        await update.message.reply_text("No dance mode is running.")
+
+
 async def cmd_ip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ctrl
     if not context.args:
@@ -393,6 +477,12 @@ async def cmd_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👤 My owners are *mohsinwa* and *faizwa* 🤝"
         )
 
+    elif intent == "dance":
+        await cmd_dance(update, context)
+
+    elif intent == "stopdance":
+        await cmd_stopdance(update, context)
+
     elif intent == "help":
         await cmd_help(update, context)
     
@@ -462,7 +552,11 @@ async def main():
     app.add_handler(CommandHandler("humidity", cmd_humidity))
     app.add_handler(CommandHandler("sensors",  cmd_sensors))
     app.add_handler(CommandHandler("ip",       cmd_ip))
-    app.add_handler(CommandHandler("diagnose", cmd_diagnose))
+    app.add_handler(CommandHandler("diagnose",   cmd_diagnose))
+    app.add_handler(CommandHandler("allon",      cmd_allon))
+    app.add_handler(CommandHandler("alloff",     cmd_alloff))
+    app.add_handler(CommandHandler("dance",      cmd_dance))
+    app.add_handler(CommandHandler("stopdance",  cmd_stopdance))
 
     # Natural language — catch all plain text messages
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, cmd_chat))
